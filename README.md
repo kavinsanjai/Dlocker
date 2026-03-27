@@ -27,7 +27,7 @@ npm run install:all
 Frontend (`frontend/.env`):
 
 ```env
-VITE_API_BASE_URL=/api
+VITE_API_URL=http://localhost:5000
 ```
 
 Backend (`backend/.env`):
