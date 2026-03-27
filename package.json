@@ -1,0 +1,15 @@
+{
+  "name": "digital-document-locker-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "install:all": "npm --prefix frontend install && npm --prefix backend install && npm --prefix frontend/tests install",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "npm --prefix backend run dev",
+    "build:frontend": "npm --prefix frontend run build",
+    "lint:frontend": "npm --prefix frontend run lint",
+    "test:selenium": "npm --prefix frontend/tests test",
+    "deploy:up": "docker compose up -d --build",
+    "deploy:down": "docker compose down"
+  }
+}
