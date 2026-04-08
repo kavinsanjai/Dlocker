@@ -23,6 +23,9 @@ const env = {
   storageBucket: process.env.SUPABASE_STORAGE_BUCKET,
   jwtSecret: process.env.JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '1d',
+  ocrEnabled: (process.env.OCR_ENABLED || 'true').toLowerCase() === 'true',
+  storageQuotaMb: Number(process.env.STORAGE_QUOTA_MB || 100),
+  defaultShareExpiryHours: Number(process.env.DEFAULT_SHARE_EXPIRY_HOURS || 24),
 }
 
 export default env

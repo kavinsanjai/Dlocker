@@ -1,9 +1,14 @@
 import { Router } from 'express'
 import multer from 'multer'
 import {
+  accessSharedDocument,
+  createShareLink,
   deleteDocument,
   downloadDocument,
+  getActivityLogs,
+  getDashboardInsights,
   getDocuments,
+  searchDocuments,
   uploadDocument,
 } from '../controllers/documentController.js'
 import { authenticateToken } from '../middleware/auth.js'
@@ -29,10 +34,16 @@ const upload = multer({
 
 const documentRoutes = Router()
 
+documentRoutes.get('/share/:token', accessSharedDocument)
+
 documentRoutes.use(authenticateToken)
 documentRoutes.post('/upload', upload.single('document'), uploadDocument)
 documentRoutes.get('/documents', getDocuments)
+documentRoutes.get('/documents/search', searchDocuments)
+documentRoutes.get('/dashboard/insights', getDashboardInsights)
+documentRoutes.get('/activity', getActivityLogs)
 documentRoutes.get('/document/:id/download', downloadDocument)
+documentRoutes.post('/share/:id', createShareLink)
 documentRoutes.delete('/document/:id', deleteDocument)
 
 export default documentRoutes

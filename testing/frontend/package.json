@@ -1,0 +1,13 @@
+{
+  "name": "digital-document-locker-selenium-testing",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node run-tests.js"
+  },
+  "dependencies": {
+    "digital-document-locker-workspace": "file:../..",
+    "dotenv": "^17.2.3",
+    "selenium-webdriver": "^4.38.0"
+  }
+}

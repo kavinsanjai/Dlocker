@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import api from '../api/client'
+import ActivityLogTable from '../components/ActivityLogTable'
+import DashboardInsights from '../components/DashboardInsights'
+import UploadDocument from '../components/UploadDocument'
 import {
   DOCUMENT_TYPES,
   DOCUMENT_TYPE_MAP,
@@ -10,14 +13,23 @@ export default function DashboardPage() {
   const { user, logout } = useAuth()
   const [documents, setDocuments] = useState([])
   const [loading, setLoading] = useState(true)
-  const [uploading, setUploading] = useState(false)
+  const [uploadingType, setUploadingType] = useState(null)
+  const [uploadProgressByType, setUploadProgressByType] = useState({})
+  const [uploadStatusByType, setUploadStatusByType] = useState({})
   const [selectedFiles, setSelectedFiles] = useState({})
   const [previewDocument, setPreviewDocument] = useState(null)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [searching, setSearching] = useState(false)
+  const [searchResults, setSearchResults] = useState(null)
+  const [insights, setInsights] = useState(null)
+  const [insightsLoading, setInsightsLoading] = useState(true)
+  const [activityLogs, setActivityLogs] = useState([])
+  const [activityLoading, setActivityLoading] = useState(true)
+  const [shareLinkByDocument, setShareLinkByDocument] = useState({})
   const [error, setError] = useState('')
 
   const loadDocuments = useCallback(async () => {
     setLoading(true)
-    setError('')
 
     try {
       const { data } = await api.get('/documents')
@@ -29,9 +41,64 @@ export default function DashboardPage() {
     }
   }, [])
 
+  const loadInsights = useCallback(async () => {
+    setInsightsLoading(true)
+
+    try {
+      const { data } = await api.get('/dashboard/insights')
+      setInsights(data)
+    } catch {
+      setInsights(null)
+    } finally {
+      setInsightsLoading(false)
+    }
+  }, [])
+
+  const loadActivity = useCallback(async () => {
+    setActivityLoading(true)
+
+    try {
+      const { data } = await api.get('/activity?limit=20')
+      setActivityLogs(data.logs || [])
+    } catch {
+      setActivityLogs([])
+    } finally {
+      setActivityLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     loadDocuments()
-  }, [loadDocuments])
+    loadInsights()
+    loadActivity()
+  }, [loadActivity, loadDocuments, loadInsights])
+
+  useEffect(() => {
+    // OCR-backed search query with a short debounce to avoid noisy API calls.
+    const query = searchTerm.trim()
+
+    if (query.length < 2) {
+      setSearchResults(null)
+      return
+    }
+
+    const timeoutId = setTimeout(async () => {
+      setSearching(true)
+
+      try {
+        const { data } = await api.get('/documents/search', {
+          params: { q: query },
+        })
+        setSearchResults(data.documents || [])
+      } catch {
+        setSearchResults([])
+      } finally {
+        setSearching(false)
+      }
+    }, 300)
+
+    return () => clearTimeout(timeoutId)
+  }, [searchTerm])
 
   const handleFileSelection = (documentType, file) => {
     setSelectedFiles((previous) => ({
@@ -40,30 +107,66 @@ export default function DashboardPage() {
     }))
   }
 
-  const handleUpload = async (documentType, replaceExisting = false) => {
-    const file = selectedFiles[documentType]
+  const handleUpload = async (documentType, file, replaceExisting = false) => {
+    // Upload progress is tracked per document type to support multiple drop zones.
     if (!file) {
       return
     }
 
-    setUploading(true)
+    setUploadingType(documentType)
     setError('')
+    setUploadStatusByType((previous) => ({
+      ...previous,
+      [documentType]: { kind: '', message: '' },
+    }))
+    setUploadProgressByType((previous) => ({
+      ...previous,
+      [documentType]: 0,
+    }))
 
     try {
       const formData = new FormData()
       formData.append('document', file)
       formData.append('documentType', documentType)
       formData.append('replaceExisting', String(replaceExisting))
-      await api.post('/upload', formData)
+
+      await api.post('/upload', formData, {
+        onUploadProgress: (event) => {
+          const total = event.total || file.size || 1
+          const percent = Math.min(Math.round((event.loaded / total) * 100), 100)
+          setUploadProgressByType((previous) => ({
+            ...previous,
+            [documentType]: percent,
+          }))
+        },
+      })
+
       setSelectedFiles((previous) => ({
         ...previous,
         [documentType]: null,
       }))
+      setUploadStatusByType((previous) => ({
+        ...previous,
+        [documentType]: { kind: 'success', message: 'Upload completed successfully.' },
+      }))
       await loadDocuments()
+      await loadInsights()
+      await loadActivity()
     } catch (requestError) {
-      setError(requestError.response?.data?.message || 'Upload failed.')
+      const message = requestError.response?.data?.message || 'Upload failed.'
+      setError(message)
+      setUploadStatusByType((previous) => ({
+        ...previous,
+        [documentType]: { kind: 'error', message },
+      }))
     } finally {
-      setUploading(false)
+      setUploadingType(null)
+      setTimeout(() => {
+        setUploadProgressByType((previous) => ({
+          ...previous,
+          [documentType]: 0,
+        }))
+      }, 350)
     }
   }
 
@@ -73,17 +176,40 @@ export default function DashboardPage() {
     try {
       await api.delete(`/document/${documentId}`)
       await loadDocuments()
+      await loadInsights()
+      await loadActivity()
     } catch (requestError) {
       setError(requestError.response?.data?.message || 'Delete failed.')
     }
   }
 
-  const handleDownload = (downloadUrl) => {
-    window.open(downloadUrl, '_blank', 'noopener,noreferrer')
+  const handleDownload = async (documentId) => {
+    try {
+      const { data } = await api.get(`/document/${documentId}/download`)
+      window.open(data.download_url, '_blank', 'noopener,noreferrer')
+      await loadActivity()
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || 'Download failed.')
+    }
   }
 
   const handlePreview = (document) => {
     setPreviewDocument(document)
+  }
+
+  const handleCreateShareLink = async (documentId, expiresInHours = 24) => {
+    // Create a secure share token and copy the generated URL when possible.
+    try {
+      const { data } = await api.post(`/share/${documentId}`, { expiresInHours })
+      setShareLinkByDocument((previous) => ({
+        ...previous,
+        [documentId]: data.share_url,
+      }))
+      await navigator.clipboard?.writeText(data.share_url)
+      await loadActivity()
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || 'Failed to create share link.')
+    }
   }
 
   const documentByType = documents.reduce((accumulator, document) => {
@@ -105,6 +231,9 @@ export default function DashboardPage() {
   const uploadedTotalCount = visibleDocumentTypes.filter(
     (item) => Boolean(documentByType[item.value]),
   ).length
+
+  const visibleDocuments =
+    searchTerm.trim().length >= 2 ? searchResults || [] : documents
 
   const progressPercent = Math.round(
     (uploadedRequiredCount / Math.max(requiredDocumentTypes.length, 1)) * 100,
@@ -146,20 +275,6 @@ export default function DashboardPage() {
               </p>
             )}
 
-            <input
-              id={`file-${item.value}`}
-              className="doc-file-input"
-              name={`file-${item.value}`}
-              data-testid={`file-${item.value}`}
-              type="file"
-              accept="image/*,.pdf"
-              onChange={(event) =>
-                handleFileSelection(item.value, event.target.files?.[0] || null)
-              }
-            />
-
-            <p className="file-selected-name">{selectedFile?.name || 'No file selected'}</p>
-
             {existingDocument ? (
               <p className="existing-file-meta">
                 Current: {existingDocument.file_name}
@@ -167,17 +282,29 @@ export default function DashboardPage() {
             ) : null}
 
             <div className="upload-actions">
-              {!existingDocument ? (
-                <button
-                  type="button"
-                  className="btn btn-primary btn-inline"
-                  data-testid={`upload-${item.value}`}
-                  disabled={uploading || !selectedFile}
-                  onClick={() => handleUpload(item.value, false)}
-                >
-                  {uploading ? 'Uploading...' : 'Upload'}
-                </button>
-              ) : (
+              <UploadDocument
+                compact
+                hideTypeSelector
+                dataTestIdPrefix={`upload-${item.value}`}
+                file={selectedFile}
+                onFileChange={(nextFile) => handleFileSelection(item.value, nextFile)}
+                uploadProgress={uploadProgressByType[item.value] || 0}
+                uploading={uploadingType === item.value}
+                uploadLabel={existingDocument ? 'Re-upload' : 'Upload'}
+                successMessage={
+                  uploadStatusByType[item.value]?.kind === 'success'
+                    ? uploadStatusByType[item.value]?.message
+                    : ''
+                }
+                errorMessage={
+                  uploadStatusByType[item.value]?.kind === 'error'
+                    ? uploadStatusByType[item.value]?.message
+                    : ''
+                }
+                onUpload={(file) => handleUpload(item.value, file, Boolean(existingDocument))}
+              />
+
+              {existingDocument ? (
                 <>
                   <button
                     type="button"
@@ -191,21 +318,12 @@ export default function DashboardPage() {
                     type="button"
                     className="btn btn-secondary btn-inline"
                     data-testid={`download-${item.value}`}
-                    onClick={() => handleDownload(existingDocument.download_url)}
+                    onClick={() => handleDownload(existingDocument.id)}
                   >
                     Download
                   </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-inline"
-                    data-testid={`reupload-${item.value}`}
-                    disabled={uploading || !selectedFile}
-                    onClick={() => handleUpload(item.value, true)}
-                  >
-                    Re-upload
-                  </button>
                 </>
-              )}
+              ) : null}
             </div>
           </article>
         )
@@ -246,6 +364,20 @@ export default function DashboardPage() {
         </article>
       </section>
 
+      <DashboardInsights insights={insights} loading={insightsLoading} />
+
+      <section className="required-documents" data-testid="search-documents">
+        <h2 className="section-title">OCR Search</h2>
+        <input
+          type="search"
+          value={searchTerm}
+          onChange={(event) => setSearchTerm(event.target.value)}
+          placeholder="Search by file name or extracted text..."
+          data-testid="search-input"
+        />
+        {searching ? <p className="summary-note">Searching...</p> : null}
+      </section>
+
       <section className="required-documents" data-testid="required-documents">
         <h2 className="section-title">Required Documents</h2>
         {renderDocumentCards(requiredDocumentTypes)}
@@ -263,22 +395,37 @@ export default function DashboardPage() {
       ) : null}
 
       <div className="documents-grid">
-        {documents.length > 0 ? (
+        {visibleDocuments.length > 0 ? (
           <table className="documents-table" data-testid="documents-table">
             <thead>
               <tr>
                 <th>Document Type</th>
                 <th>File Name</th>
                 <th>Uploaded At</th>
+                <th>Share</th>
                 <th>Delete</th>
               </tr>
             </thead>
             <tbody>
-              {documents.map((document) => (
+              {visibleDocuments.map((document) => (
                 <tr key={document.id} data-testid="document-row">
                   <td>{DOCUMENT_TYPE_MAP[document.document_type]?.label || 'Other Document'}</td>
                   <td>{document.file_name}</td>
                   <td>{new Date(document.created_at).toLocaleString()}</td>
+                  <td>
+                    <button
+                      className="btn btn-secondary btn-inline"
+                      data-testid={`share-${document.id}`}
+                      onClick={() => handleCreateShareLink(document.id, 24)}
+                    >
+                      Share Link
+                    </button>
+                    {shareLinkByDocument[document.id] ? (
+                      <p className="file-selected-name">
+                        {shareLinkByDocument[document.id]}
+                      </p>
+                    ) : null}
+                  </td>
                   <td>
                     <button
                       className="btn btn-danger btn-inline"
@@ -299,6 +446,11 @@ export default function DashboardPage() {
         )}
       </div>
 
+      <section className="required-documents" data-testid="activity-section">
+        <h2 className="section-title">Activity Logs</h2>
+        <ActivityLogTable logs={activityLogs} loading={activityLoading} />
+      </section>
+
       {previewDocument ? (
         <div className="preview-backdrop" data-testid="preview-modal">
           <div className="preview-card">
@@ -313,11 +465,19 @@ export default function DashboardPage() {
                 Close
               </button>
             </div>
-            <iframe
-              title="Document Preview"
-              src={previewDocument.download_url}
-              className="preview-frame"
-            />
+            {previewDocument.mime_type?.includes('pdf') ? (
+              <iframe
+                title="Document Preview"
+                src={previewDocument.preview_url || previewDocument.download_url}
+                className="preview-frame"
+              />
+            ) : (
+              <img
+                className="preview-image"
+                src={previewDocument.preview_url || previewDocument.download_url}
+                alt={previewDocument.file_name}
+              />
+            )}
           </div>
         </div>
       ) : null}
